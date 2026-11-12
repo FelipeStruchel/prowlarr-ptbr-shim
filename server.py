@@ -31,7 +31,7 @@ DEFAULTS = {
     "port": 9797,
     "torznab_apikey": "ptbr-shim",
     "tmdb_api_key": "",
-    "site_url": "https://www.baixetorrentshd.com",
+    "sites": ["baixetorrentshd", "torrentfilmehds", "baixafilmestorrent"],
     "language_tag": "Brazilian",
     "assume_source": "BluRay",
     "default_seeders": 1,
@@ -236,9 +236,37 @@ def resolve_titles(p):
 
 
 # ----------------------------------------------------------------------------- site
-CARD_RE = re.compile(r'<article class="movie-card">(.*?)</article>', re.S)
-CARD_TITLE_RE = re.compile(r'movie-card__title"><a href="([^"]+)">([^<]+)</a>')
-CARD_YEAR_RE = re.compile(r'movie-card__badge">(\d{4})<')
+SITE_DEFS = {
+    "baixetorrentshd": {
+        "name": "BaixeTorrentsHD",
+        "base_url": "https://www.baixetorrentshd.com",
+        "movie_path": "/categoria/filmes/",
+        "tv_path": "/categoria/series/",
+        "card_re": re.compile(r'<article class="movie-card">(.*?)</article>', re.S),
+        "title_re": re.compile(r'movie-card__title"><a href="([^"]+)">([^<]+)</a>'),
+        "year_re": re.compile(r'movie-card__badge">(\d{4})<'),
+    },
+    "torrentfilmehds": {
+        "name": "TorrentFilmesHD",
+        "base_url": "https://www.torrentfilmehds.net",
+        "movie_path": "/genero/filmes/",
+        "tv_path": "/genero/series/",
+        "card_re": re.compile(r'<article class="item">(.*?)</article>', re.S),
+        "title_re": re.compile(r'<a href="([^"]+)"[^>]*>.*?<div class="titulo"><span>([^<]+)</span>', re.S),
+        "year_re": re.compile(r'<div class="imagem"><span>(\d{4})</span>'),
+    },
+    "baixafilmestorrent": {
+        "name": "BaixaFilmesTorrent",
+        "base_url": "https://baixafilmestorrent.com",
+        "movie_path": "/filmes/",
+        "tv_path": "/series/",
+        # os cards de "mais acessados"/"relacionados" usam o mesmo div.item, mas com
+        # title="Link para ..." - o lookahead abaixo os exclui dos resultados de busca
+        "card_re": re.compile(r'<div class="item">(.*?)</a>\s*</div>', re.S),
+        "title_re": re.compile(r'<a href="([^"]+)" title="(?!Link para )([^"]+?)\s+Torrent\b', re.S),
+        "year_re": re.compile(r"\((\d{4})\)"),
+    },
+}
 MAGNET_RE = re.compile(r'<a\s[^>]*href="(magnet:[^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(TB|GB|MB)", re.I)
 RES_RE = re.compile(r"\b(2160p|4K|1080p|720p|480p)\b", re.I)
@@ -248,27 +276,32 @@ DUAL_RE = re.compile(r"(dual|dublad|nacional)", re.I)
 SEASON_TAG_RE = re.compile(r"\bS\d{1,2}(E\d{1,3})?\b|\b\d{1,2}x\d{2}\b|Temporada|Season", re.I)
 
 
-def parse_cards(page):
+def enabled_sites():
+    return [SITE_DEFS[s] for s in CFG["sites"] if s in SITE_DEFS]
+
+
+def parse_cards(page, site):
     cards = []
-    for block in CARD_RE.findall(page):
-        m = CARD_TITLE_RE.search(block)
+    for block in site["card_re"].findall(page):
+        m = site["title_re"].search(block)
         if not m:
             continue
-        y = CARD_YEAR_RE.search(block)
+        y = site["year_re"].search(block)
         title = html.unescape(m.group(2)).strip()
         cards.append({"url": html.unescape(m.group(1)), "title": title,
                       "year": int(y.group(1)) if y else None,
-                      "is_tv": bool(re.search(r"Temporada|Season", title, re.I))})
+                      "is_tv": bool(re.search(r"Temporada|Season", title, re.I)),
+                      "site": site["name"]})
     return cards
 
 
-def site_search(term):
-    url = CFG["site_url"].rstrip("/") + "/?s=" + urllib.parse.quote_plus(term)
+def site_search(term, site):
+    url = site["base_url"].rstrip("/") + "/?s=" + urllib.parse.quote_plus(term)
     ck = "site:" + url
     hit = cache_get(ck)
     if hit is not None:
         return hit
-    cards = parse_cards(http_get(url))
+    cards = parse_cards(http_get(url), site)
     cache_set(ck, cards, 30)
     return cards
 
@@ -331,7 +364,7 @@ def fetch_post(card):
 def build_release(card, post, mg, info):
     q = urllib.parse.parse_qs(urllib.parse.urlparse(mg["href"]).query)
     xt = (q.get("xt") or [""])[0]
-    m = re.search(r"btih:([0-9a-fA-F]{40}|[A-Z2-7]{32})", xt)
+    m = re.search(r"btih:([0-9a-fA-F]{40}|[A-Za-z2-7]{32})", xt)
     if not m:
         return None
     infohash = m.group(1).lower() if len(m.group(1)) == 40 else m.group(1)
@@ -386,7 +419,7 @@ def build_release(card, post, mg, info):
     return {
         "title": title, "infohash": infohash, "magnet": mg["href"], "size": size,
         "pub": post.get("pub") or time.time(), "cats": [base, base + sub],
-        "details": card["url"], "indexer": "BaixeTorrentsHD",
+        "details": card["url"], "indexer": card["site"],
         "seeders": CFG["default_seeders"], "leechers": CFG["default_seeders"], "link": None,
         "season": rng, "tv": tv,
     }
@@ -414,26 +447,27 @@ def site_results(infos, p):
                 terms.append(t)
         keys = [norm(info.get("pt")), norm(info.get("orig"))]
         keys = [k for k in keys if k]
-        for term in terms:
-            try:
-                found = site_search(term)
-            except Exception as e:  # noqa: BLE001
-                log.warning("busca no site falhou (%s): %s", term, type(e).__name__)
-                continue
-            for c in found:
-                nt = " " + norm(c["title"]) + " "
-                if keys and not any(" " + k + " " in nt for k in keys):
+        for site in enabled_sites():
+            for term in terms:
+                try:
+                    found = site_search(term, site)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("busca em %s falhou (%s): %s", site["name"], term, type(e).__name__)
                     continue
-                if (info["kind"] == "tv") != c["is_tv"]:
-                    continue
-                if info["kind"] == "movie" and info.get("year") and c["year"] and abs(c["year"] - info["year"]) > 1:
-                    continue
-                if info["kind"] == "tv" and info.get("season"):
-                    rng = season_range(c["title"])
-                    if rng and not (rng[0] <= info["season"] <= rng[1]):
+                for c in found:
+                    nt = " " + norm(c["title"]) + " "
+                    if keys and not any(" " + k + " " in nt for k in keys):
                         continue
-                info["keys"] = keys
-                cards.setdefault(c["url"], (c, info))
+                    if (info["kind"] == "tv") != c["is_tv"]:
+                        continue
+                    if info["kind"] == "movie" and info.get("year") and c["year"] and abs(c["year"] - info["year"]) > 1:
+                        continue
+                    if info["kind"] == "tv" and info.get("season"):
+                        rng = season_range(c["title"])
+                        if rng and not (rng[0] <= info["season"] <= rng[1]):
+                            continue
+                    info["keys"] = keys
+                    cards.setdefault(c["url"], (c, info))
     items = list(cards.values())[: CFG["max_posts"]]
     return fetch_and_build(items, p)
 
@@ -478,20 +512,21 @@ def latest_results(p):
     want_movie = t == "movie" or any(c.startswith("2") for c in cats)
     if not want_tv and not want_movie:
         want_tv = want_movie = True
-    base = CFG["site_url"].rstrip("/")
-    pages = []
-    if want_movie:
-        pages.append(("/categoria/filmes/", False))
-    if want_tv:
-        pages.append(("/categoria/series/", True))
     picked = []
-    for path, is_tv in pages:
-        try:
-            cards = [c for c in parse_cards(http_get(base + path)) if c["is_tv"] == is_tv]
-        except Exception as e:  # noqa: BLE001
-            log.warning("falha ao listar %s: %s", path, type(e).__name__)
-            continue
-        picked += cards[:5]
+    for site in enabled_sites():
+        base = site["base_url"].rstrip("/")
+        pages = []
+        if want_movie:
+            pages.append((site["movie_path"], False))
+        if want_tv:
+            pages.append((site["tv_path"], True))
+        for path, is_tv in pages:
+            try:
+                cards = [c for c in parse_cards(http_get(base + path), site) if c["is_tv"] == is_tv]
+            except Exception as e:  # noqa: BLE001
+                log.warning("falha ao listar %s%s: %s", base, path, type(e).__name__)
+                continue
+            picked += cards[:5]
     items = [(c, {"kind": "tv" if c["is_tv"] else "movie", "pt": None, "orig": None}) for c in picked]
     return fetch_and_build(items, p)
 
