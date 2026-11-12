@@ -1,0 +1,19 @@
+{
+  "port": 9797,
+  "torznab_apikey": "ptbr-shim",
+  "tmdb_api_key": "COLE_SUA_CHAVE_TMDB_AQUI",
+  "language_tag": "Brazilian",
+  "assume_source": "BluRay",
+  "default_seeders": 1,
+  "max_posts": 8,
+  "rewrite_titles": true,
+  "prowlarr": {
+    "enabled": true,
+    "url": "http://localhost:9696",
+    "api_key": "",
+    "exclude_names": ["BaixeTorrentsHD"],
+    "timeout": 30,
+    "per_indexer_timeout": 25,
+    "max_results": 60
+  }
+}
