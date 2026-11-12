@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Guia rápido pra agentes de IA trabalhando neste repo. Detalhes completos (arquitetura,
-contrato do `SITE`, como adicionar um source) estão em [CONTRIBUTING.md](CONTRIBUTING.md).
+contrato do `SOURCE`, como adicionar um source) estão em [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## O que é
 
@@ -32,10 +32,14 @@ e, se possível, subindo o servidor e batendo em `/api?t=caps` e `/api?t=search&
 
 ## Adicionando um source novo
 
-Use `python scripts/new_source.py <site_id> "Nome" https://site.com` e preencha os regexes
-olhando o HTML real do site (nunca assuma a estrutura). **Nunca** adicione um site cujo
-magnet só é liberado depois de um link locker/anúncio - ver a seção correspondente em
-CONTRIBUTING.md antes de propor um source assim.
+Contrato fixo (não muda): `search(term) -> cards`, `fetch_post(card) -> post`, `latest(is_tv)`
+opcional - ver CONTRIBUTING.md. Pra um site com HTML simples, use
+`python scripts/new_source.py <site_id> "Nome" https://site.com` e preencha os regexes
+olhando o HTML real do site (nunca assuma a estrutura). Pra um site que não encaixa nesse
+padrão (API própria, paginação diferente, etc.), escreva `search`/`fetch_post` direto, sem
+usar `regex_source` - o resto do motor (`scraper.py`) não precisa saber a diferença. **Nunca**
+adicione um site cujo magnet só é liberado depois de um link locker/anúncio - ver a seção
+correspondente em CONTRIBUTING.md antes de propor um source assim.
 
 ## Antes de considerar uma mudança pronta
 

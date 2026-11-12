@@ -1,27 +1,25 @@
-"""Motor de scraping: busca nos sources habilitados e monta os releases.
+"""Motor de busca: chama os sources habilitados pelo contrato comum
+(search/fetch_post/latest) e monta os releases a partir dos magnets.
 
-Entrada e saida sao as mesmas para qualquer source - cada um em sources/ e
-so o "meio" (pagina de busca -> cards -> post -> magnets). Erros de um
-source especifico (HTTP, timeout, parse) sao logados e ignorados; os
-outros sources continuam normalmente.
+Entrada e saida sao as mesmas pra qualquer source - cada um em sources/ e
+so o "meio" entre um termo de busca e uma lista de cards/magnets no formato
+padrao (ver sources/_template.py). Como cada source produz isso (regex, API
+proprio, etc.) e irrelevante aqui. Erros de um source especifico (HTTP,
+timeout, parse) sao logados e ignorados; os outros sources continuam
+normalmente.
 """
-import html
 import logging
 import re
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
 from config import CFG
 from sources import load_sites
-from utils.cache import cache_get, cache_set
-from utils.http import http_get
-from utils.text import SIZE_RE, fuzzy_pattern, norm, size_to_bytes, strip_tags
+from utils.text import SIZE_RE, fuzzy_pattern, norm, size_to_bytes
 
 log = logging.getLogger("shim")
 
-MAGNET_RE = re.compile(r'<a\s[^>]*href="(magnet:[^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 RES_RE = re.compile(r"\b(2160p|4K|1080p|720p|480p)\b", re.I)
 SRC_RE = re.compile(r"\b(WEB-?DL|WEBRip|BluRay|Blu-Ray|BDRip|BRRip|HDTV|HDRip|DVDRip|REMUX|HDCAM|CAM)\b", re.I)
 LANG_RE = re.compile(r"\b(PT-?BR|PTBR|portugu[eê]s|brazilian|brasil|dublado|nacional)\b", re.I)
@@ -39,32 +37,6 @@ def enabled_sites():
     return [_SITES[s] for s in CFG["sites"] if s in _SITES]
 
 
-def parse_cards(page, site):
-    cards = []
-    for block in site["card_re"].findall(page):
-        m = site["title_re"].search(block)
-        if not m:
-            continue
-        y = site["year_re"].search(block)
-        title = html.unescape(m.group(2)).strip()
-        cards.append({"url": html.unescape(m.group(1)), "title": title,
-                      "year": int(y.group(1)) if y else None,
-                      "is_tv": bool(re.search(r"Temporada|Season", title, re.I)),
-                      "site": site["name"]})
-    return cards
-
-
-def site_search(term, site):
-    url = site["base_url"].rstrip("/") + "/?s=" + urllib.parse.quote_plus(term)
-    ck = "site:" + url
-    hit = cache_get(ck)
-    if hit is not None:
-        return hit
-    cards = parse_cards(http_get(url, timeout=CFG["site_timeout"]), site)
-    cache_set(ck, cards, 30)
-    return cards
-
-
 def base_title(title):
     t = re.sub(r"\s*\(\d{4}\)\s*$", "", title)
     t = re.sub(r"\s*\d+\s*ª?\s*(?:até\s*\d+\s*ª?\s*)?Temporada.*$", "", t, flags=re.I)
@@ -80,35 +52,6 @@ def season_range(title):
         n = int(m.group(1))
         return n, n
     return None
-
-
-def fetch_post(card):
-    ck = "post:" + card["url"]
-    hit = cache_get(ck)
-    if hit is not None:
-        return hit
-    page = http_get(card["url"], timeout=CFG["site_timeout"])
-    orig = None
-    m = re.search(r"T[ií]tulo original:\s*([^<]+)", page)
-    if m:
-        orig = html.unescape(m.group(1)).strip()
-    pub = None
-    m = re.search(r'article:published_time"\s+content="([^"]+)"', page) or \
-        re.search(r'content="([^"]+)"\s+property="article:published_time"', page)
-    if m:
-        try:
-            pub = datetime.fromisoformat(m.group(1)).timestamp()
-        except ValueError:
-            pub = None
-    magnets = []
-    for m in MAGNET_RE.finditer(page):
-        href = html.unescape(m.group(1))
-        anchor = strip_tags(m.group(2))
-        before = strip_tags(page[max(0, m.start() - 400): m.start()])[-230:]
-        magnets.append({"href": href, "anchor": anchor, "before": before})
-    data = {"orig": orig, "pub": pub, "magnets": magnets}
-    cache_set(ck, data)
-    return data
 
 
 def build_release(card, post, mg, info):
@@ -200,7 +143,7 @@ def site_results(infos, p):
         for site in enabled_sites():
             for term in terms:
                 try:
-                    found = site_search(term, site)
+                    found = site["search"](term)
                 except Exception as e:  # noqa: BLE001
                     log.warning("busca em %s falhou (%s): %s", site["name"], term, type(e).__name__)
                     continue
@@ -217,6 +160,7 @@ def site_results(infos, p):
                         if rng and not (rng[0] <= info["season"] <= rng[1]):
                             continue
                     info["keys"] = keys
+                    c["_site"] = site
                     cards.setdefault(c["url"], (c, info))
     items = list(cards.values())[: CFG["max_posts"]]
     return fetch_and_build(items, p)
@@ -228,7 +172,7 @@ def fetch_and_build(items, p):
     def work(ci):
         card, info = ci
         try:
-            post = fetch_post(card)
+            post = card["_site"]["fetch_post"](card)
         except Exception as e:  # noqa: BLE001
             log.warning("falha ao abrir %s: %s", card["url"], type(e).__name__)
             return []
@@ -255,7 +199,8 @@ def fetch_and_build(items, p):
 
 
 def latest_results(p):
-    """Ultimos posts (RSS / teste do Prowlarr), respeitando as categorias pedidas."""
+    """Ultimos posts (RSS / teste do Prowlarr), respeitando as categorias pedidas.
+    Sources sem "latest" (opcional no contrato) simplesmente nao aparecem aqui."""
     cats = [c for c in (p.get("cat") or "").split(",") if c]
     t = p.get("t")
     want_tv = t == "tvsearch" or any(c.startswith("5") for c in cats)
@@ -264,19 +209,18 @@ def latest_results(p):
         want_tv = want_movie = True
     picked = []
     for site in enabled_sites():
-        base = site["base_url"].rstrip("/")
-        pages = []
-        if want_movie:
-            pages.append((site["movie_path"], False))
-        if want_tv:
-            pages.append((site["tv_path"], True))
-        for path, is_tv in pages:
+        latest = site.get("latest")
+        if not latest:
+            continue
+        wants = ([False] if want_movie else []) + ([True] if want_tv else [])
+        for is_tv in wants:
             try:
-                page = http_get(base + path, timeout=CFG["site_timeout"])
-                cards = [c for c in parse_cards(page, site) if c["is_tv"] == is_tv]
+                cards = latest(is_tv)
             except Exception as e:  # noqa: BLE001
-                log.warning("falha ao listar %s%s: %s", base, path, type(e).__name__)
+                log.warning("falha ao listar %s (is_tv=%s): %s", site["name"], is_tv, type(e).__name__)
                 continue
+            for c in cards:
+                c["_site"] = site
             picked += cards[:5]
     items = [(c, {"kind": "tv" if c["is_tv"] else "movie", "pt": None, "orig": None}) for c in picked]
     return fetch_and_build(items, p)

@@ -1,7 +1,8 @@
 """Auto-descoberta de sources: cada arquivo .py nesta pasta (exceto os que
-comecam com "_") deve expor um dict SITE com os campos obrigatorios abaixo.
+comecam com "_") deve expor um dict SOURCE com name/search/fetch_post (e,
+opcionalmente, latest) - ver sources/_template.py para o contrato completo.
 
-Um source com erro de importacao (sintaxe, regex invalido, campo faltando)
+Um source com erro de importacao (sintaxe, campo faltando, SOURCE ausente)
 e ignorado e logado - nunca derruba o servidor inteiro.
 """
 import importlib
@@ -10,7 +11,7 @@ import os
 
 log = logging.getLogger("shim")
 
-REQUIRED_FIELDS = ("name", "base_url", "movie_path", "tv_path", "card_re", "title_re", "year_re")
+REQUIRED_CALLABLES = ("search", "fetch_post")
 
 
 def load_sites():
@@ -22,10 +23,12 @@ def load_sites():
         site_id = fname[:-3]
         try:
             mod = importlib.import_module(f"sources.{site_id}")
-            site = mod.SITE
-            missing = [f for f in REQUIRED_FIELDS if f not in site]
+            site = mod.SOURCE
+            if not site.get("name"):
+                raise ValueError("campo 'name' faltando ou vazio no SOURCE")
+            missing = [f for f in REQUIRED_CALLABLES if not callable(site.get(f))]
             if missing:
-                raise ValueError("campo(s) faltando no SITE: " + ", ".join(missing))
+                raise ValueError("campo(s) faltando/invalido(s) no SOURCE: " + ", ".join(missing))
         except Exception as e:  # noqa: BLE001
             log.error("source '%s' ignorada (erro ao carregar): %s", site_id, e)
             continue
