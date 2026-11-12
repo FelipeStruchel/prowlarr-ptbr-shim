@@ -2,6 +2,7 @@
   "port": 9797,
   "torznab_apikey": "ptbr-shim",
   "tmdb_api_key": "COLE_SUA_CHAVE_TMDB_AQUI",
+  "sites": ["baixetorrentshd", "torrentfilmehds", "baixafilmestorrent"],
   "language_tag": "Brazilian",
   "assume_source": "BluRay",
   "default_seeders": 1,
