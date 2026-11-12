@@ -63,6 +63,14 @@ def build_release(card, post, mg, info):
     infohash = m.group(1).lower() if len(m.group(1)) == 40 else m.group(1)
     dn = (q.get("dn") or [""])[0].strip()
     xl = (q.get("xl") or [""])[0]
+    # reconstroi o magnet a partir das partes ja decodificadas (parse_qs decodifica %XX) em vez
+    # de repassar o href cru do site: alguns sites servem xt=urn%3Abtih%3A... (encodado), que e
+    # um URI valido mas quebra o parser de magnet do Prowlarr (MonoTorrent), que exige urn:btih: literal
+    magnet = "magnet:?xt=urn:btih:" + infohash
+    if dn:
+        magnet += "&dn=" + urllib.parse.quote(dn)
+    for tr in q.get("tr") or []:
+        magnet += "&tr=" + urllib.parse.quote(tr, safe="")
     ctx = (mg["anchor"] + " | " + mg["before"])
     # descricao mais proxima do magnet: o texto do proprio botao vale mais que o contexto anterior
     desc = mg["anchor"] if SIZE_RE.search(mg["anchor"]) or RES_RE.search(mg["anchor"]) else mg["before"]
@@ -110,7 +118,7 @@ def build_release(card, post, mg, info):
     base = 5000 if tv else 2000
     sub = {"2160p": 45, "1080p": 40, "720p": 40}.get(res, 30)
     return {
-        "title": title, "infohash": infohash, "magnet": mg["href"], "size": size,
+        "title": title, "infohash": infohash, "magnet": magnet, "size": size,
         "pub": post.get("pub") or time.time(), "cats": [base, base + sub],
         "details": card["url"], "indexer": card["site"],
         "seeders": CFG["default_seeders"], "leechers": CFG["default_seeders"], "link": None,
